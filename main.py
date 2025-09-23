@@ -1,9 +1,5 @@
 import numpy as np
 import matplotlib.pyplot as plt
-
-class NeuralNet:
-import numpy as np
-
 class NeuralNet:
     def __init__(self, input_dim, hidden_dim, seed=0):
         np.random.seed(seed)
