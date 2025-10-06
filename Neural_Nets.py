@@ -1,5 +1,7 @@
 import numpy as np
 
+__all__ = ["MLP", "Standardiser", "train_val_split", "confusion_matrix"]
+
 class NeuralNet:
     def __init__(self, input_dim, hidden_dim, seed=0):
         np.random.seed(seed)
@@ -244,25 +246,19 @@ class NeuralNetMC:
 
 class MLP:
     def __init__(self, layer_sizes, seed=0):
-        """
-        layer_sizes: list like [input_dim, h1, h2, ..., num_classes]
-        """
-        assert len(layer_sizes) >= 2
-        self.sizes = layer_sizes
-        self.L = len(layer_sizes) - 1  # number of weight layers
+        assert isinstance(layer_sizes, (list, tuple)) and len(layer_sizes) >= 2
+        self.sizes = list(layer_sizes)
+        self.L = len(self.sizes) - 1
         rng = np.random.RandomState(seed)
 
-        # Params: W[l] is (sizes[l], sizes[l+1]); b[l] is (1, sizes[l+1])
         self.W = []
         self.b = []
         for l in range(self.L):
-            fan_in, fan_out = layer_sizes[l], layer_sizes[l+1]
+            fan_in, fan_out = self.sizes[l], self.sizes[l+1]
             if l < self.L - 1:
-                # He init for ReLU hidden layers
-                Wl = rng.randn(fan_in, fan_out) * np.sqrt(2.0 / fan_in)
+                Wl = rng.randn(fan_in, fan_out) * math.sqrt(2.0 / fan_in)
             else:
-                # last layer: logits; modest scale
-                Wl = rng.randn(fan_in, fan_out) * np.sqrt(1.0 / fan_in)
+                Wl = rng.randn(fan_in, fan_out) * math.sqrt(1.0 / fan_in)
             bl = np.zeros((1, fan_out))
             self.W.append(Wl)
             self.b.append(bl)
@@ -270,9 +266,12 @@ class MLP:
         self.cache = {}
 
     @staticmethod
-    def _relu(x): return np.maximum(0.0, x)
+    def _relu(x):
+        return np.maximum(0.0, x)
+
     @staticmethod
-    def _relu_grad(x): return (x > 0.0).astype(x.dtype)
+    def _relu_grad(x):
+        return (x > 0.0).astype(x.dtype)
 
     @staticmethod
     def _softmax(z):
@@ -288,10 +287,9 @@ class MLP:
         Y[np.arange(y.size), y.reshape(-1)] = 1.0
         return Y
 
-    # ----- forward -----
     def forward(self, X):
-        A = [X]      # activations
-        Z = []       # pre-activations
+        A = [X]
+        Z = []
         for l in range(self.L):
             z = A[-1] @ self.W[l] + self.b[l]
             Z.append(z)
@@ -300,11 +298,9 @@ class MLP:
             else:
                 a = self._softmax(z)
             A.append(a)
-
         self.cache = {"A": A, "Z": Z}
-        return A[-1]  # probs
+        return A[-1]
 
-    # ----- loss (cross-entropy) -----
     def loss(self, probs, y):
         C = probs.shape[1]
         Y = self._to_one_hot(y, C)
@@ -312,7 +308,6 @@ class MLP:
         probs = np.clip(probs, eps, 1 - eps)
         return -np.mean(np.sum(Y * np.log(probs), axis=1))
 
-    # ----- backprop -----
     def backprop(self, y):
         A, Z = self.cache["A"], self.cache["Z"]
         N = A[0].shape[0]
@@ -322,12 +317,10 @@ class MLP:
         dW = [None] * self.L
         db = [None] * self.L
 
-        # output layer: softmax + CE
-        dZ = (A[-1] - Y) / N                 # (N, C)
+        dZ = (A[-1] - Y) / N
         dW[self.L-1] = A[-2].T @ dZ
         db[self.L-1] = dZ.sum(axis=0, keepdims=True)
 
-        # hidden layers (ReLU)
         for l in range(self.L-2, -1, -1):
             dA = dZ @ self.W[l+1].T
             dZ = dA * self._relu_grad(Z[l])
@@ -336,7 +329,6 @@ class MLP:
 
         return dW, db
 
-    # ----- SGD step -----
     def step(self, dW, db, lr=0.1, weight_decay=0.0):
         for l in range(self.L):
             if weight_decay:
@@ -344,24 +336,24 @@ class MLP:
             self.W[l] -= lr * dW[l]
             self.b[l] -= lr * db[l]
 
-    # ----- predict / score -----
     def predict(self, X):
         probs = self.forward(X)
         return np.argmax(probs, axis=1).reshape(-1, 1)
 
     def score(self, X, y):
-        yp = self.predict(X)
+        y_pred = self.predict(X)
         y_idx = y if (y.ndim == 1 or y.shape[1] == 1) else np.argmax(y, axis=1).reshape(-1, 1)
-        return (yp == y_idx).mean()
+        return (y_pred == y_idx).mean()
 
-    # ----- training loop -----
     def fit(self, X, y, epochs=500, lr=0.1, batch_size=None, shuffle=True,
-            verbose_every=100, weight_decay=0.0):
+            verbose_every=100, weight_decay=0.0, record_history=False):
         N = X.shape[0]
         if y.ndim == 1:
             y = y.reshape(-1, 1)
 
-        for epoch in range(1, epochs+1):
+        history = {"loss": [], "acc": []} if record_history else None
+
+        for epoch in range(1, epochs + 1):
             if batch_size is None or batch_size >= N:
                 probs = self.forward(X)
                 dW, db = self.backprop(y)
@@ -372,7 +364,7 @@ class MLP:
                     idx = np.random.permutation(N)
                     X, y = X[idx], y[idx]
                 loss_sum = 0.0
-                seen = 0
+                n_seen = 0
                 for s in range(0, N, batch_size):
                     e = s + batch_size
                     Xb, yb = X[s:e], y[s:e]
@@ -380,14 +372,20 @@ class MLP:
                     dW, db = self.backprop(yb)
                     self.step(dW, db, lr=lr, weight_decay=weight_decay)
                     loss_sum += self.loss(probs_b, yb) * len(Xb)
-                    seen += len(Xb)
-                loss_val = loss_sum / max(1, seen)
+                    n_seen += len(Xb)
+                loss_val = loss_sum / max(1, n_seen)
+
+            if record_history:
+                acc = self.score(X, y)
+                history["loss"].append(loss_val)
+                history["acc"].append(acc)
 
             if verbose_every and (epoch == 1 or epoch % verbose_every == 0 or epoch == epochs):
                 acc = self.score(X, y)
                 print(f"epoch {epoch:4d} | loss={loss_val:.4f} | acc={acc:.3f}")
 
-    # ----- save / load -----
+        return history
+
     def save(self, path):
         np.savez_compressed(
             path,
@@ -400,8 +398,131 @@ class MLP:
     def load(cls, path):
         data = np.load(path, allow_pickle=False)
         sizes = data["sizes"].tolist()
-        model = cls(sizes, seed=0)  # will be overwritten
+        model = cls(sizes, seed=0)
         for l in range(model.L):
             model.W[l] = data[f"W{l}"]
             model.b[l] = data[f"b{l}"]
         return model
+    
+class Standardiser:
+    def __init__(self):
+        self.mean_ = None
+        self.std_ = None
+
+    def fit(self, X):
+        self.mean_ = X.mean(axis=0, keepdims=True)
+        self.std_ = X.std(axis=0, keepdims=True) + 1e-12
+        return self
+
+    def transform(self, X):
+        return (X - self.mean_) / self.std_
+
+    def fit_transform(self, X):
+        return self.fit(X).transform(X)
+
+    def save(self, path):
+        np.savez_compressed(path, mean=self.mean_, std=self.std_)
+
+    @classmethod
+    def load(cls, path):
+        data = np.load(path, allow_pickle=False)
+        obj = cls()
+        obj.mean_ = data["mean"]
+        obj.std_  = data["std"]
+        return obj
+
+
+def train_val_split(X, y, val_ratio=0.25, seed=0, stratify=True):
+    rng = np.random.RandomState(seed)
+    N = X.shape[0]
+    if stratify:
+        classes = np.unique(y.reshape(-1))
+        tr_idx, va_idx = [], []
+        for c in classes:
+            idx = np.where(y.reshape(-1) == c)[0]
+            rng.shuffle(idx)
+            n_val = int(round(len(idx) * val_ratio))
+            va_idx.extend(idx[:n_val].tolist())
+            tr_idx.extend(idx[n_val:].tolist())
+        tr_idx, va_idx = np.array(tr_idx), np.array(va_idx)
+    else:
+        idx = np.arange(N)
+        rng.shuffle(idx)
+        n_val = int(round(N * val_ratio))
+        va_idx = idx[:n_val]
+        tr_idx = idx[n_val:]
+    return X[tr_idx], X[va_idx], y[tr_idx], y[va_idx]
+
+
+def confusion_matrix(y_true, y_pred, num_classes):
+    cm = np.zeros((num_classes, num_classes), dtype=int)
+    for t, p in zip(y_true.reshape(-1), y_pred.reshape(-1)):
+        cm[t, p] += 1
+    return cm
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Train a from-scratch MLP (NumPy).")
+    parser.add_argument("--layers", type=str, default=None, help="Comma-separated sizes, e.g. '4,16,3'.")
+    parser.add_argument("--epochs", type=int, default=600)
+    parser.add_argument("--lr", type=float, default=0.1)
+    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--weight_decay", type=float, default=1e-4)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--val_ratio", type=float, default=0.25)
+    parser.add_argument("--model_path", type=str, default="mlp_model.npz")
+    parser.add_argument("--scaler_path", type=str, default="scaler.npz")
+    args = parser.parse_args()
+
+    try:
+        from sklearn.datasets import load_iris
+        iris = load_iris()
+        X = iris.data.astype(np.float64)
+        y = iris.target.reshape(-1, 1)
+        print(f"Loaded Iris: X={X.shape}, classes={np.unique(y).size}")
+    except Exception:
+        print("scikit-learn not available; using synthetic 3-class blobs.")
+        rng = np.random.RandomState(args.seed)
+        N, D, C = 450, 2, 3
+        centers = np.array([[ 2.0,  0.0],
+                            [-2.0,  0.5],
+                            [ 0.0, -2.0]])
+        X_list, y_list = [], []
+        for ci in range(C):
+            Xc = rng.randn(N//C, D) + centers[ci]
+            yc = np.full((N//C, 1), ci, dtype=int)
+            X_list.append(Xc); y_list.append(yc)
+        X = np.vstack(X_list)
+        y = np.vstack(y_list)
+        print(f"Synthetic blobs: X={X.shape}, classes={np.unique(y).size}")
+
+    X_tr, X_va, y_tr, y_va = train_val_split(X, y, val_ratio=args.val_ratio, seed=args.seed, stratify=True)
+    scaler = Standardiser().fit(X_tr)
+    X_tr_s = scaler.transform(X_tr)
+    X_va_s = scaler.transform(X_va)
+
+    if args.layers:
+        sizes = [int(s) for s in args.layers.split(",")]
+    else:
+        D = X_tr_s.shape[1]
+        C = int(np.unique(y_tr).size)
+        sizes = [D, 16, C]
+
+    print("Architecture:", sizes)
+    mlp = MLP(sizes, seed=args.seed)
+
+    mlp.fit(
+        X_tr_s, y_tr,
+        epochs=args.epochs, lr=args.lr, batch_size=args.batch_size,
+        shuffle=True, verbose_every=max(1, args.epochs // 4),
+        weight_decay=args.weight_decay, record_history=False
+    )
+
+    print("Train acc:", mlp.score(X_tr_s, y_tr))
+    print("Val   acc:", mlp.score(X_va_s, y_va))
+
+    mlp.save(args.model_path)
+    scaler.save(args.scaler_path)
+    print(f"Saved model to {args.model_path} and {args.scaler_path}")
