@@ -1,13 +1,19 @@
-
 #!/usr/bin/env python3
-# Train the from-scratch MLP on real datasets (Iris/Wine/Digits) or simple synthetics.
+# Train the from-scratch MLP on real datasets (Iris/Wine/Digits/MNIST) or CSV/synthetics.
 import argparse
 import numpy as np
 
 # Local module (same folder) — MLP/Standardiser utilities
 from Neural_Nets import MLP, Standardiser, train_val_split, confusion_matrix
 
+# -----------------------------
+# Dataset loaders
+# -----------------------------
 def load_dataset(name, seed=0):
+    """
+    Built-in datasets that may rely on scikit-learn (iris, wine, digits).
+    Synthetics (moons, blobs) require no external deps.
+    """
     name = name.lower()
     if name in ("iris", "wine", "digits"):
         try:
@@ -60,10 +66,94 @@ def load_dataset(name, seed=0):
     else:
         raise ValueError("Unknown dataset. Choose from: iris, wine, digits, moons, blobs.")
 
+def load_mnist_via_sklearn():
+    """
+    MNIST via scikit-learn's OpenML fetcher.
+    Returns X in [0,1], shape (70000, 784); y in {0..9} shape (70000,1).
+    """
+    try:
+        from sklearn.datasets import fetch_openml
+    except Exception as e:
+        raise RuntimeError("MNIST requires scikit-learn: pip install scikit-learn") from e
+    ds = fetch_openml("mnist_784", version=1, as_frame=False)
+    X = ds.data.astype(np.float64) / 255.0
+    y = ds.target.astype(int).reshape(-1, 1)
+    return X, y
+
+def load_csv(path, target, delimiter=",", has_header=True):
+    """
+    Generic CSV loader.
+    Args:
+      path: CSV file
+      target: column name (if has_header) or 0-based index
+      delimiter: field delimiter
+      has_header: whether first row is header
+    Returns:
+      X (float64, N x D), y (int, N x 1), info dict {'classes': [...], 'target_name': str}
+    """
+    import csv
+    rows = []
+    with open(path, "r", newline="") as f:
+        reader = csv.reader(f, delimiter=delimiter)
+        rows = list(reader)
+
+    if not rows:
+        raise ValueError("CSV appears to be empty.")
+
+    if has_header:
+        header = rows[0]
+        data_rows = rows[1:]
+        if isinstance(target, str):
+            if target not in header:
+                raise ValueError(f"Target column '{target}' not found in header: {header}")
+            t_idx = header.index(target)
+            target_name = target
+        else:
+            t_idx = int(target)
+            if t_idx < 0 or t_idx >= len(header):
+                raise ValueError(f"Target index {t_idx} out of range for header with {len(header)} columns.")
+            target_name = header[t_idx]
+    else:
+        header = None
+        data_rows = rows
+        t_idx = int(target)
+        target_name = f"col_{t_idx}"
+
+    # Split into X and y
+    X_raw, y_raw = [], []
+    for r in data_rows:
+        if not r:
+            continue
+        y_raw.append(r[t_idx])
+        X_raw.append([c for i, c in enumerate(r) if i != t_idx])
+
+    # Convert X to float64
+    try:
+        X = np.array(X_raw, dtype=np.float64)
+    except ValueError as e:
+        raise ValueError("Failed to convert some feature columns to float. "
+                         "Ensure your CSV features are numeric or preprocessed.") from e
+
+    # Encode labels (could be strings) to 0..C-1
+    y_raw = np.array(y_raw)
+    classes, y_idx = np.unique(y_raw, return_inverse=True)
+    y = y_idx.reshape(-1, 1).astype(int)
+
+    info = {"classes": classes.tolist(), "target_name": target_name}
+    return X, y, info
+
+# -----------------------------
+# Main
+# -----------------------------
 def main():
-    p = argparse.ArgumentParser(description="Train a from-scratch NumPy MLP on real datasets.")
-    p.add_argument("--dataset", type=str, default="iris",
-                   help="iris | wine | digits | moons | blobs")
+    p = argparse.ArgumentParser(description="Train a from-scratch NumPy MLP on real datasets or CSV.")
+    ds_help = "iris | wine | digits | mnist | moons | blobs (or use --csv)"
+    p.add_argument("--dataset", type=str, default=None, help=ds_help)
+    p.add_argument("--csv", type=str, default=None, help="Path to a CSV file to train on.")
+    p.add_argument("--target", type=str, default=None,
+                   help="Target column name (if CSV has header) or 0-based index (use with --no_header).")
+    p.add_argument("--delimiter", type=str, default=",", help="CSV delimiter (default ',').")
+    p.add_argument("--no_header", action="store_true", help="Set if CSV has no header row.")
     p.add_argument("--layers", type=str, default=None,
                    help="Comma-separated sizes like '4,16,3'. If omitted, inferred from data.")
     p.add_argument("--epochs", type=int, default=600)
@@ -77,10 +167,26 @@ def main():
     p.add_argument("--show_cm", action="store_true", help="Print validation confusion matrix")
     args = p.parse_args()
 
-    # Load data
-    X, y = load_dataset(args.dataset, seed=args.seed)
-    C = int(np.unique(y).size)
-    print(f"Loaded '{args.dataset}': X={X.shape}, classes={C}")
+    # Load data with priority: CSV > dataset
+    if args.csv:
+        if args.target is None:
+            raise SystemExit("--csv requires --target (name or 0-based index)")
+        tgt = args.target if not args.no_header else int(args.target)
+        X, y, info = load_csv(args.csv, target=tgt, delimiter=args.delimiter, has_header=(not args.no_header))
+        C = int(np.unique(y).size)
+        print(f"Loaded CSV '{args.csv}': X={X.shape}, classes={C}, target={info['target_name']}")
+        dataset_key = "csv"
+    elif args.dataset:
+        name = args.dataset.lower()
+        if name == "mnist":
+            X, y = load_mnist_via_sklearn()
+        else:
+            X, y = load_dataset(name, seed=args.seed)  # iris|wine|digits|moons|blobs
+        C = int(np.unique(y).size)
+        print(f"Loaded '{args.dataset}': X={X.shape}, classes={C}")
+        dataset_key = name
+    else:
+        raise SystemExit("Specify --dataset or --csv. See --help for options.")
 
     # Split & scale
     X_tr, X_va, y_tr, y_va = train_val_split(X, y, val_ratio=args.val_ratio, seed=args.seed, stratify=True)
@@ -93,15 +199,16 @@ def main():
         sizes = [int(s) for s in args.layers.split(",")]
     else:
         D = X_tr_s.shape[1]
-        # Good defaults per dataset if layers omitted
         default_map = {
             "iris":   [D, 16, C],
             "wine":   [D, 32, C],
-            "digits": [D, 64, C],  # 64->64->10 works well
+            "digits": [D, 64, C],
+            "mnist":  [D, 128, 64, C],
             "moons":  [D, 32, C],
             "blobs":  [D, 16, C],
+            "csv":    [D, 32, C],
         }
-        sizes = default_map.get(args.dataset.lower(), [D, 32, C])
+        sizes = default_map.get(dataset_key, [D, 32, C])
 
     print("Architecture:", sizes)
     mlp = MLP(sizes, seed=args.seed)
@@ -123,7 +230,7 @@ def main():
     if args.show_cm:
         y_pred = mlp.predict(X_va_s)
         cm = confusion_matrix(y_va, y_pred, C)
-        print("Confusion matrix (rows=true, cols=pred):\n", cm)
+        print("Confusion matrix (rows=true, cols=pred): n", cm)
 
     # Save
     mlp.save(args.model_path)

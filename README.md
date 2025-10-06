@@ -3,70 +3,76 @@
 
 A lightweight, framework‑free **multilayer perceptron (MLP)** for **multiclass classification**, built only with **NumPy**.
 
-## Features
-- Configurable depth/width: pass `layer_sizes` like `[D, 32, 32, C]`
-- **ReLU** hidden layers, **Softmax + Cross‑Entropy** output
-- Mini‑batch **SGD** with optional **L2 weight decay**
-- Simple **Standardiser** (persistable) for feature scaling
-- **Save/Load** model and scaler via `.npz`
-
-## Files
-- `mlp_from_scratch.py` — the module (classes: `MLP`, `Standardiser`; utils: `train_val_split`, `confusion_matrix`)
-- `from_scratch_mlp.ipynb` — companion notebook (plots & walkthrough)
+## What's here
+- `Neural_Nets.py` — reusable module with:
+  - `MLP` (ReLU hidden layers, Softmax output, Cross‑Entropy loss, SGD)
+  - `Standardiser` (fit/transform/save/load)
+  - `train_val_split`, `confusion_matrix`
+- `train_on_dataset.py` — CLI trainer for **Iris/Wine/Digits/MNIST**, **synthetics** (moons/blobs), or **any CSV**.
 
 ## Install
-```
-pip install numpy matplotlib scikit-learn  # sklearn optional (Iris demo)
-```
-
-## Quick Start (Python)
-```python
-import numpy as np
-from mlp_from_scratch import MLP, Standardiser, train_val_split
-
-# Data (3 classes)
-N, D, C = 300, 4, 3
-X = np.random.randn(N, D)
-y = np.random.randint(0, C, size=(N, 1))
-
-# Split & scale
-X_tr, X_va, y_tr, y_va = train_val_split(X, y, val_ratio=0.25, seed=0, stratify=True)
-scaler = Standardiser().fit(X_tr)
-X_tr_s = scaler.transform(X_tr)
-X_va_s = scaler.transform(X_va)
-
-# Model
-net = MLP([D, 16, C], seed=0)
-net.fit(X_tr_s, y_tr, epochs=500, lr=0.1, batch_size=32, weight_decay=1e-4)
-
-print("Val acc:", net.score(X_va_s, y_va))
-
-# Save
-net.save("mlp_model.npz")
-scaler.save("scaler.npz")
+```bash
+pip install numpy matplotlib scikit-learn  # sklearn used for datasets like Iris/Wine/Digits/MNIST
 ```
 
-## CLI Demo
+## Quick start (Iris)
+```bash
+python train_on_dataset.py --dataset iris --layers 4,16,3 --epochs 600 --lr 0.1 --batch_size 32 --show_cm
 ```
-python mlp_from_scratch.py --layers 4,16,3 --epochs 600 --lr 0.1 --batch_size 32 --weight_decay 1e-4
+
+## Train on MNIST
+Uses OpenML via scikit‑learn, flattens 28×28 to 784 features and scales to [0,1].
+```bash
+python train_on_dataset.py --dataset mnist --epochs 15 --lr 0.05 --batch_size 128 --show_cm
+# or with a deeper net
+python train_on_dataset.py --dataset mnist --layers 784,256,128,10 --epochs 15 --lr 0.05 --batch_size 128 --show_cm
 ```
-Saves `mlp_model.npz` and `scaler.npz` and prints train/val accuracy.
 
-### CLI Options
-- `--layers` e.g. `4,32,16,3` (default inferred from data)
-- `--epochs` training epochs (default 600)
-- `--lr` learning rate (default 0.1)
-- `--batch_size` mini‑batch size (default 32; use large value for full‑batch)
-- `--weight_decay` L2 coefficient (default 1e-4)
-- `--val_ratio` validation split ratio (default 0.25)
-- `--seed` RNG seed (default 0)
-- `--model_path`, `--scaler_path` output file paths
+## Train on Digits (8×8 images → 64 features)
+```bash
+python train_on_dataset.py --dataset digits --layers 64,64,10 --epochs 800 --lr 0.1 --batch_size 64 --show_cm
+```
 
-## Tips
-- Always standardise features for tabular data and reuse the same scaler for inference.
-- Increase width/depth if underfitting, e.g. `[D, 64, 64, C]`.
-- If training is unstable, try a smaller `--lr` or larger `--batch_size`.
-- For image datasets (e.g., MNIST), flatten images first; CNNs will outperform MLPs on images.
+## Train on any CSV
+The loader accepts a header or not, and maps string labels to 0..C‑1.
+
+With a header (target by name):
+```bash
+python train_on_dataset.py --csv mydata.csv --target label --epochs 500 --lr 0.1 --batch_size 64 --show_cm
+```
+
+No header (target by index, e.g., last column):
+```bash
+python train_on_dataset.py --csv mydata_noheader.csv --no_header --target 10 --epochs 500 --lr 0.1
+```
+
+Options:
+- `--delimiter` to change the CSV delimiter (default `,`).
+- `--val_ratio` (default `0.25`) uses a stratified split.
+
+## Architecture defaults
+If `--layers` is omitted, the trainer picks sensible defaults:
+- iris → `[D, 16, C]`
+- wine → `[D, 32, C]`
+- digits → `[D, 64, C]`
+- mnist → `[D, 128, 64, C]`
+- moons → `[D, 32, C]`
+- blobs → `[D, 16, C]`
+- csv → `[D, 32, C]`
+
+You can always override, e.g., `--layers 32,32,10`.
+
+## Saving & loading
+Training saves:
+- `mlp_model.npz` — network weights
+- `scaler.npz` — feature standardiser
+
+At inference time, load both and apply the scaler before calling `MLP.predict`.
+
+## Notes
+- Always **fit** the `Standardiser` on the **training** split only; use it to transform validation/test.
+- For images (MNIST/Digits), inputs are numeric and scaled; standardising still helps.
+- This MLP is educational; CNNs outperform it on image tasks.
 
 ## License
 MIT
