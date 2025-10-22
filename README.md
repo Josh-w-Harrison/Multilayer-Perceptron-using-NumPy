@@ -148,10 +148,7 @@ plot_history(history, prefix="digits_demo", save=True)
 
 ---
 
-## Future Extensions
+## POssible Future Extensions
 - Learning-rate schedulers (step or cosine decay)
-- Convolutional or dropout layers
 - Checkpoint saving and auto-resume
 - Decision-boundary visualiser for 2D datasets
-
----
