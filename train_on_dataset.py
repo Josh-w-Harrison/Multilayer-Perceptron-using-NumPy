@@ -160,11 +160,26 @@ def main():
     p.add_argument("--lr", type=float, default=0.1)
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--weight_decay", type=float, default=1e-4)
+    p.add_argument("--optimizer", type=str, default=None,
+                   help="sgd | momentum | rmsprop | adam")
+    p.add_argument("--momentum", type=float, default=0.9, help="Momentum for SGD with momentum")
+    p.add_argument("--rho", type=float, default=0.9, help="RMSprop rho")
+    p.add_argument("--beta1", type=float, default=0.9, help="Adam beta1")
+    p.add_argument("--beta2", type=float, default=0.999, help="Adam beta2")
+    p.add_argument("--eps", type=float, default=1e-8, help="Optimizer epsilon")
     p.add_argument("--val_ratio", type=float, default=0.25)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--model_path", type=str, default="mlp_model.npz")
     p.add_argument("--scaler_path", type=str, default="scaler.npz")
+    p.add_argument("--record_history", action="store_true", help="Store training/validation curves")
+    p.add_argument("--plot_curves", action="store_true", help="Save loss/accuracy plots as PNG")
+    p.add_argument("--plot_prefix", type=str, default="training", help="Filename prefix for plots")
     p.add_argument("--show_cm", action="store_true", help="Print validation confusion matrix")
+    p.add_argument("--early_stop", action="store_true", help="Enable early stopping on validation set")
+    p.add_argument("--patience", type=int, default=20, help="Early stopping patience (epochs without improvement)")
+    p.add_argument("--min_delta", type=float, default=0.0, help="Minimum improvement to reset patience")
+    p.add_argument("--monitor", type=str, default="val_loss", help="Metric to monitor: val_loss | val_acc | train_loss | acc")
+    p.add_argument("--restore_best", action="store_true", help="Restore best weights at the end")
     args = p.parse_args()
 
     # Load data with priority: CSV > dataset
@@ -214,11 +229,16 @@ def main():
     mlp = MLP(sizes, seed=args.seed)
 
     # Train
-    mlp.fit(
+    history = mlp.fit(
         X_tr_s, y_tr,
         epochs=args.epochs, lr=args.lr, batch_size=args.batch_size,
         shuffle=True, verbose_every=max(1, args.epochs // 4),
-        weight_decay=args.weight_decay, record_history=False
+        weight_decay=args.weight_decay, record_history=args.record_history,
+        optimizer=args.optimizer,
+        X_val=X_va_s, y_val=y_va, monitor=args.monitor,
+        early_stop=args.early_stop, patience=args.patience, min_delta=args.min_delta,
+        restore_best=args.restore_best,
+        momentum=args.momentum, rho=args.rho, beta1=args.beta1, beta2=args.beta2, eps=args.eps
     )
 
     # Metrics
@@ -236,6 +256,15 @@ def main():
     mlp.save(args.model_path)
     scaler.save(args.scaler_path)
     print(f"Saved model to {args.model_path} and scaler to {args.scaler_path}")
+    # Save plots if requested
+    if args.record_history and args.plot_curves and history is not None:
+        try:
+            from Neural_Nets import plot_history
+            plot_history(history, prefix=args.plot_prefix, show=False, save=True)
+            print(f"Saved plots: {args.plot_prefix}_loss.png, {args.plot_prefix}_acc.png")
+        except Exception as e:
+            print("Plotting failed:", e)
+
 
 if __name__ == "__main__":
     main()

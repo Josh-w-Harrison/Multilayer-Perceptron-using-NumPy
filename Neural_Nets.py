@@ -1,7 +1,7 @@
 import numpy as np
 import math
 
-__all__ = ["MLP", "Standardiser", "train_val_split", "confusion_matrix"]
+__all__ = ["MLP", "Standardiser", "train_val_split", "confusion_matrix", "plot_history"]
 
 class NeuralNet:
     def __init__(self, input_dim, hidden_dim, seed=0):
@@ -12,6 +12,7 @@ class NeuralNet:
         self.W2 = np.random.randn(hidden_dim, 1) * np.sqrt(2.0 / hidden_dim)
         self.b2 = np.zeros((1, 1))
         self.cache = {}
+        self.optimizer = None
 
     # ----- activations -----
     @staticmethod
@@ -91,30 +92,30 @@ class NeuralNet:
 
     # ----- training loop -----
     def fit(self, X, y, epochs=1000, lr=0.1, batch_size=None, verbose_every=100, shuffle=True):
-        N = X.shape[0]
-        for epoch in range(1, epochs + 1):
-            if batch_size is None or batch_size >= N:
-                y_hat = self.feed_forward(X)
-                grads = self.backprop(y)
-                self.step(grads, lr=lr)
-                loss_val = self.loss(y_hat, y)
-            else:
-                if shuffle:
-                    idx = np.random.permutation(N)
-                    X, y = X[idx], y[idx]
-                loss_accum = 0.0
-                for s in range(0, N, batch_size):
-                    e = s + batch_size
-                    Xb, yb = X[s:e], y[s:e]
-                    y_hat_b = self.feed_forward(Xb)
-                    grads = self.backprop(yb)
+            N = X.shape[0]
+            for epoch in range(1, epochs + 1):
+                if batch_size is None or batch_size >= N:
+                    y_hat = self.feed_forward(X)
+                    grads = self.backprop(y)
                     self.step(grads, lr=lr)
-                    loss_accum += self.loss(y_hat_b, yb) * len(Xb)
-                loss_val = loss_accum / N
+                    loss_val = self.loss(y_hat, y)
+                else:
+                    if shuffle:
+                        idx = np.random.permutation(N)
+                        X, y = X[idx], y[idx]
+                    loss_accum = 0.0
+                    for s in range(0, N, batch_size):
+                        e = s + batch_size
+                        Xb, yb = X[s:e], y[s:e]
+                        y_hat_b = self.feed_forward(Xb)
+                        grads = self.backprop(yb)
+                        self.step(grads, lr=lr)
+                        loss_accum += self.loss(y_hat_b, yb) * len(Xb)
+                    loss_val = loss_accum / N
 
-            if verbose_every and (epoch == 1 or epoch % verbose_every == 0 or epoch == epochs):
-                acc = self.score(X, y)
-                print(f"epoch {epoch:4d} | loss={loss_val:.4f} | acc={acc:.3f}")
+                if verbose_every and (epoch == 1 or epoch % verbose_every == 0 or epoch == epochs):
+                    acc = self.score(X, y)
+                    print(f"epoch {epoch:4d} | loss={loss_val:.4f} | acc={acc:.3f}")
 
 
 
@@ -245,6 +246,120 @@ class NeuralNetMC:
                 acc = self.score(X, y)
                 print(f"epoch {epoch:4d} | loss={loss_val:.4f} | acc={acc:.3f}")
 
+
+# -----------------------------
+# Optimizers
+# -----------------------------
+
+class _BaseOptimizer:
+    """Abstract base optimizer that updates parameter lists [W_l], [b_l]."""
+    def __init__(self, lr=0.1, eps=1e-8):
+        self.lr = lr
+        self.eps = eps
+        self._init = False
+
+    def init_state(self, W_list, b_list):
+        """Allocate any state buffers per-parameter; called once before training."""
+        self._init = True
+
+    def update(self, W_list, b_list, dW_list, db_list):
+        raise NotImplementedError
+
+
+class SGD(_BaseOptimizer):
+    """Vanilla SGD: W -= lr * dW"""
+    def update(self, W_list, b_list, dW_list, db_list):
+        for l in range(len(W_list)):
+            W_list[l] -= self.lr * dW_list[l]
+            b_list[l] -= self.lr * db_list[l]
+
+
+class SGDMomentum(_BaseOptimizer):
+    """SGD with Momentum: v = mu*v - lr*dW; W += v"""
+    def __init__(self, lr=0.1, momentum=0.9):
+        super().__init__(lr=lr)
+        self.momentum = momentum
+        self.vW = None
+        self.vb = None
+
+    def init_state(self, W_list, b_list):
+        import numpy as _np
+        self.vW = [ _np.zeros_like(W) for W in W_list ]
+        self.vb = [ _np.zeros_like(b) for b in b_list ]
+        self._init = True
+
+    def update(self, W_list, b_list, dW_list, db_list):
+        if not self._init: self.init_state(W_list, b_list)
+        mu, lr = self.momentum, self.lr
+        for l in range(len(W_list)):
+            self.vW[l] = mu*self.vW[l] - lr*dW_list[l]
+            self.vb[l] = mu*self.vb[l] - lr*db_list[l]
+            W_list[l] += self.vW[l]
+            b_list[l] += self.vb[l]
+
+
+class RMSprop(_BaseOptimizer):
+    """RMSprop: r = rho*r + (1-rho)*dW^2; W -= lr * dW / (sqrt(r)+eps)"""
+    def __init__(self, lr=0.001, rho=0.9, eps=1e-8):
+        super().__init__(lr=lr, eps=eps)
+        self.rho = rho
+        self.rW = None
+        self.rb = None
+
+    def init_state(self, W_list, b_list):
+        import numpy as _np
+        self.rW = [ _np.zeros_like(W) for W in W_list ]
+        self.rb = [ _np.zeros_like(b) for b in b_list ]
+        self._init = True
+
+    def update(self, W_list, b_list, dW_list, db_list):
+        if not self._init: self.init_state(W_list, b_list)
+        rho, lr, eps = self.rho, self.lr, self.eps
+        for l in range(len(W_list)):
+            self.rW[l] = rho*self.rW[l] + (1.0-rho)*(dW_list[l]**2)
+            self.rb[l] = rho*self.rb[l] + (1.0-rho)*(db_list[l]**2)
+            W_list[l] -= lr * dW_list[l] / (np.sqrt(self.rW[l]) + eps)
+            b_list[l] -= lr * db_list[l] / (np.sqrt(self.rb[l]) + eps)
+
+
+class Adam(_BaseOptimizer):
+    """Adam optimizer with bias correction."""
+    def __init__(self, lr=0.001, beta1=0.9, beta2=0.999, eps=1e-8):
+        super().__init__(lr=lr, eps=eps)
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.mW = None; self.vW = None
+        self.mb = None; self.vb = None
+        self.t = 0
+
+    def init_state(self, W_list, b_list):
+        import numpy as _np
+        self.mW = [ _np.zeros_like(W) for W in W_list ]
+        self.vW = [ _np.zeros_like(W) for W in W_list ]
+        self.mb = [ _np.zeros_like(b) for b in b_list ]
+        self.vb = [ _np.zeros_like(b) for b in b_list ]
+        self.t = 0
+        self._init = True
+
+    def update(self, W_list, b_list, dW_list, db_list):
+        if not self._init: self.init_state(W_list, b_list)
+        self.t += 1
+        b1, b2, lr, eps = self.beta1, self.beta2, self.lr, self.eps
+        for l in range(len(W_list)):
+            # First moment
+            self.mW[l] = b1*self.mW[l] + (1.0-b1)*dW_list[l]
+            self.mb[l] = b1*self.mb[l] + (1.0-b1)*db_list[l]
+            # Second moment
+            self.vW[l] = b2*self.vW[l] + (1.0-b2)*(dW_list[l]**2)
+            self.vb[l] = b2*self.vb[l] + (1.0-b2)*(db_list[l]**2)
+            # Bias correction
+            mW_hat = self.mW[l] / (1.0 - b1**self.t)
+            mb_hat = self.mb[l] / (1.0 - b1**self.t)
+            vW_hat = self.vW[l] / (1.0 - b2**self.t)
+            vb_hat = self.vb[l] / (1.0 - b2**self.t)
+            # Update
+            W_list[l] -= lr * mW_hat / (np.sqrt(vW_hat) + eps)
+            b_list[l] -= lr * mb_hat / (np.sqrt(vb_hat) + eps)
 class MLP:
     def __init__(self, layer_sizes, seed=0):
         assert isinstance(layer_sizes, (list, tuple)) and len(layer_sizes) >= 2
@@ -265,6 +380,7 @@ class MLP:
             self.b.append(bl)
 
         self.cache = {}
+        self.optimizer = None
 
     @staticmethod
     def _relu(x):
@@ -331,11 +447,47 @@ class MLP:
         return dW, db
 
     def step(self, dW, db, lr=0.1, weight_decay=0.0):
+        # Apply L2 regularisation directly to gradients
         for l in range(self.L):
             if weight_decay:
                 dW[l] = dW[l] + weight_decay * self.W[l]
-            self.W[l] -= lr * dW[l]
-            self.b[l] -= lr * db[l]
+        if self.optimizer is not None:
+            # Optimizer owns learning rate
+            self.optimizer.update(self.W, self.b, dW, db)
+        else:
+            for l in range(self.L):
+                self.W[l] -= lr * dW[l]
+                self.b[l] -= lr * db[l]
+
+    
+    def set_optimizer(self, name="sgd", **kwargs):
+        """
+        Configure the optimizer. Options:
+          - "sgd":        lr
+          - "momentum":   lr, momentum
+          - "rmsprop":    lr, rho, eps
+          - "adam":       lr, beta1, beta2, eps
+        """
+        name = (name or "sgd").lower()
+        if name == "sgd":
+            self.optimizer = SGD(lr=kwargs.get("lr", 0.1))
+        elif name in ("momentum", "sgdm", "sgd_momentum"):
+            self.optimizer = SGDMomentum(lr=kwargs.get("lr", 0.1),
+                                         momentum=kwargs.get("momentum", 0.9))
+        elif name == "rmsprop":
+            self.optimizer = RMSprop(lr=kwargs.get("lr", 0.001),
+                                     rho=kwargs.get("rho", 0.9),
+                                     eps=kwargs.get("eps", 1e-8))
+        elif name == "adam":
+            self.optimizer = Adam(lr=kwargs.get("lr", 0.001),
+                                  beta1=kwargs.get("beta1", 0.9),
+                                  beta2=kwargs.get("beta2", 0.999),
+                                  eps=kwargs.get("eps", 1e-8))
+        else:
+            raise ValueError(f"Unknown optimizer '{name}'")
+        # ensure state is initialised
+        self.optimizer.init_state(self.W, self.b)
+        return self
 
     def predict(self, X):
         probs = self.forward(X)
@@ -347,13 +499,47 @@ class MLP:
         return (y_pred == y_idx).mean()
 
     def fit(self, X, y, epochs=500, lr=0.1, batch_size=None, shuffle=True,
-            verbose_every=100, weight_decay=0.0, record_history=False):
+            verbose_every=100, weight_decay=0.0, record_history=False,
+            optimizer=None, X_val=None, y_val=None, monitor='val_loss',
+            early_stop=False, patience=10, min_delta=0.0, restore_best=True,
+            **opt_kwargs):
         N = X.shape[0]
         if y.ndim == 1:
             y = y.reshape(-1, 1)
 
         history = {"loss": [], "acc": []} if record_history else None
+        if record_history and X_val is not None and y_val is not None:
+            history.update({"val_loss": [], "val_acc": []})
 
+        # Configure optimizer if requested
+        if optimizer:
+            self.set_optimizer(optimizer, **opt_kwargs)
+        # Early stopping state
+        best_score = None
+        best_params = None
+        wait = 0
+        def _current_metric():
+            # Compute monitored metric
+            if monitor in ('val_loss','val_acc') and X_val is not None and y_val is not None:
+                if monitor == 'val_loss':
+                    p = self.forward(X_val); return -self.loss(p, y_val)  # negative loss so 'higher is better'
+                else:
+                    return self.score(X_val, y_val)
+            elif monitor in ('train_loss','loss'):
+                p = self.forward(X); return -self.loss(p, y)
+            else:
+                return self.score(X, y)
+        # helper to snapshot weights
+        import copy as _copy
+        def _snapshot():
+            return ([w.copy() for w in self.W], [b.copy() for b in self.b])
+        def _restore(params):
+            W, b = params
+            for i in range(self.L):
+                self.W[i] = W[i].copy(); self.b[i] = b[i].copy()
+        # initialise best
+        best_score = _current_metric()
+        best_params = _snapshot()
         for epoch in range(1, epochs + 1):
             if batch_size is None or batch_size >= N:
                 probs = self.forward(X)
@@ -376,15 +562,43 @@ class MLP:
                     n_seen += len(Xb)
                 loss_val = loss_sum / max(1, n_seen)
 
+            # Record history
             if record_history:
-                acc = self.score(X, y)
-                history["loss"].append(loss_val)
-                history["acc"].append(acc)
-
+                acc_tr = self.score(X, y)
+                history['loss'].append(loss_val)
+                history['acc'].append(acc_tr)
+                if X_val is not None and y_val is not None:
+                    p_val = self.forward(X_val)
+                    history.setdefault('val_loss', []).append(self.loss(p_val, y_val))
+                    history.setdefault('val_acc', []).append(self.score(X_val, y_val))
+            # Early stopping check
+            metric = _current_metric()
+            improved = (metric > best_score + min_delta)
+            if improved:
+                best_score = metric
+                best_params = _snapshot()
+                wait = 0
+            else:
+                if early_stop:
+                    wait += 1
+                    if wait >= patience:
+                        if restore_best and best_params is not None:
+                            _restore(best_params)
+                        if verbose_every:
+                            print(f"Early stopping at epoch {epoch}. Best monitored metric={best_score:.6f}")
+                        return history
+            # Verbose output
             if verbose_every and (epoch == 1 or epoch % verbose_every == 0 or epoch == epochs):
-                acc = self.score(X, y)
-                print(f"epoch {epoch:4d} | loss={loss_val:.4f} | acc={acc:.3f}")
-
+                msg = f"epoch {epoch:4d} | loss={loss_val:.4f} | acc={self.score(X, y):.3f}"
+                if X_val is not None and y_val is not None:
+                    va_probs = self.forward(X_val)
+                    va_loss = self.loss(va_probs, y_val)
+                    va_acc = self.score(X_val, y_val)
+                    msg += f" | val_loss={va_loss:.4f} | val_acc={va_acc:.3f}"
+                print(msg)
+        # training completed without early stop
+        if restore_best and best_params is not None:
+            _restore(best_params)
         return history
 
     def save(self, path):
@@ -460,6 +674,51 @@ def confusion_matrix(y_true, y_pred, num_classes):
     for t, p in zip(y_true.reshape(-1), y_pred.reshape(-1)):
         cm[t, p] += 1
     return cm
+
+
+
+def plot_history(history, prefix=None, show=False, save=False):
+    """
+    Plot training curves from the `history` dict returned by MLP.fit().
+    Keys supported:
+      - "loss", "acc" (lists)
+      - optional "val_loss", "val_acc"
+    If `save` is True and prefix is provided, saves two PNGs:
+      f"{prefix}_loss.png", f"{prefix}_acc.png"
+    """
+    import matplotlib.pyplot as plt
+
+    epochs = range(1, len(history.get("loss", [])) + 1)
+
+    # Loss
+    plt.figure()
+    plt.plot(epochs, history.get("loss", []), label="train_loss")
+    if "val_loss" in history:
+        plt.plot(epochs, history["val_loss"], label="val_loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.legend()
+    if save and prefix:
+        plt.savefig(f"{prefix}_loss.png", bbox_inches="tight")
+    if show:
+        plt.show()
+    plt.close()
+
+    # Accuracy
+    if "acc" in history or "val_acc" in history:
+        plt.figure()
+        if "acc" in history:
+            plt.plot(epochs, history.get("acc", []), label="train_acc")
+        if "val_acc" in history:
+            plt.plot(epochs, history["val_acc"], label="val_acc")
+        plt.xlabel("Epoch")
+        plt.ylabel("Accuracy")
+        plt.legend()
+        if save and prefix:
+            plt.savefig(f"{prefix}_acc.png", bbox_inches="tight")
+        if show:
+            plt.show()
+        plt.close()
 
 
 if __name__ == "__main__":
